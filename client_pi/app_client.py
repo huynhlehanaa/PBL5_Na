@@ -1,40 +1,64 @@
+import base64
 import cv2
 import requests
-import time
+from pathlib import Path
 
 SERVER_URL = "http://10.222.177.172:5000/process"
+DOCX_OUTPUT = Path("Ket_qua_PBL5.docx")
+
 
 def capture_and_send():
-    cam = cv2.VideoCapture(0) # Mở camera
+    cam = cv2.VideoCapture(0)  # Mở camera
     print("Nhan 'Space' de chup anh hoac 'Esc' de thoat...")
-    
+
     while True:
         ret, frame = cam.read()
         cv2.imshow("Raspberry Pi Camera", frame)
-        
+
         key = cv2.waitKey(1)
-        if key == 32: # Phím Space
+        if key == 32:  # Phím Space
             # 1. Mã hóa ảnh để gửi
-            _, img_encoded = cv2.imencode('.jpg', frame)
-            
+            _, img_encoded = cv2.imencode(".jpg", frame)
+
             # 2. Gửi sang Server
             print("Dang gui anh len Server xu ly...")
-            files = {'image': ('image.jpg', img_encoded.tobytes(), 'image/jpeg')}
-            
+            files = {"image": ("image.jpg", img_encoded.tobytes(), "image/jpeg")}
+
             try:
                 response = requests.post(SERVER_URL, files=files)
-                if response.status_code == 200:
-                    print("Ket qua tra ve:", response.json())
-                else:
+                if response.status_code != 200:
                     print("Loi Server:", response.text)
+                    continue
+
+                result = response.json()
+                if result.get("status") != "success":
+                    print("Xu ly that bai:", result)
+                    continue
+
+                data = result.get("data", {})
+                ocr_results = data.get("ocr", [])
+                docx_b64 = data.get("docx_base64")
+
+                # Hiển thị nhanh 3 dòng đầu tiên của OCR để kiểm tra
+                if ocr_results:
+                    first_image = ocr_results[0]
+                    preview_lines = first_image.get("content", [])[:3]
+                    print("Mau ket qua OCR:", preview_lines)
+
+                # Lưu file Word trả về từ server
+                if docx_b64:
+                    DOCX_OUTPUT.write_bytes(base64.b64decode(docx_b64))
+                    print(f"Da luu file Word: {DOCX_OUTPUT.resolve()}")
+
             except Exception as e:
                 print("Khong the ket noi den Server:", e)
-                
-        elif key == 27: # Phím Esc
+
+        elif key == 27:  # Phím Esc
             break
 
     cam.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     capture_and_send()

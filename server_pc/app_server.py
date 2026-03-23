@@ -27,17 +27,24 @@ for folder in [UPLOAD_FOLDER, PREPROCESS_FOLDER, LAYOUT_FOLDER, OUTPUT_FOLDER]:
 
 
 def _build_docx(ocr_results, output_dir: Path, job_id: str):
-    """Tạo file Word từ kết quả OCR và trả về đường dẫn."""
+    """Tạo file Word từ kết quả OCR và trả về đường dẫn.
+
+    Trả về (path, total_chars). Nếu total_chars vượt ngưỡng, trả về (None, total_chars).
+    """
     doc = Document()
+    total_chars = 0
     for res in ocr_results:
         doc.add_heading(f"Kết quả: {res.get('image', 'Unknown')}", level=1)
         for line in res.get("content", []):
+            total_chars += len(line)
+            if total_chars > MAX_DOC_CHARS:
+                return None, total_chars
             doc.add_paragraph(line)
 
-    doc_filename = f"Kết_quả_{job_id}.docx"
+    doc_filename = f"result_{job_id}.docx"
     doc_path = output_dir / doc_filename
     doc.save(str(doc_path))
-    return doc_path
+    return doc_path, total_chars
 
 
 @app.route('/process', methods=['POST'])
@@ -67,12 +74,10 @@ def process():
     layout_results = run_layout(req_pre, req_layout)
     ocr_results = run_ocr(req_pre, layout_results, req_output)
 
-    total_chars = sum(len(line) for res in ocr_results for line in res.get("content", []))
-    if total_chars > MAX_DOC_CHARS:
-        return jsonify({"error": "Generated document is too large"}), 400
-
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
-    doc_path = _build_docx(ocr_results, req_output, job_id)
+    doc_path, total_chars = _build_docx(ocr_results, req_output, job_id)
+    if doc_path is None:
+        return jsonify({"error": "Generated document is too large"}), 400
     if doc_path.stat().st_size > MAX_DOC_BYTES:
         return jsonify({"error": "Generated document is too large"}), 400
     doc_b64 = base64.b64encode(doc_path.read_bytes()).decode("utf-8")

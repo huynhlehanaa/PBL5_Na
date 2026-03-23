@@ -1,5 +1,4 @@
 import base64
-from datetime import datetime
 import cv2
 import requests
 from pathlib import Path
@@ -49,9 +48,10 @@ def capture_and_send():
                 # Lưu file Word trả về từ server
                 if docx_b64:
                     if not job_id:
-                        print("Cảnh báo: server không trả về job_id, sử dụng timestamp dự phòng.")
-                    job_suffix = job_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-                    docx_name = data.get("docx_filename") or f"Kết_quả_{job_suffix}.docx"
+                        print("Canh bao: server khong tra ve job_id, bo qua luu file Word.")
+                        continue
+
+                    docx_name = data.get("docx_filename") or f"result_{job_id}.docx"
                     docx_path = Path(docx_name)
                     docx_path.write_bytes(base64.b64decode(docx_b64))
                     print(f"Da luu file Word: {docx_path.resolve()}")

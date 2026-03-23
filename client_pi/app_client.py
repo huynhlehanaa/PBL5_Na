@@ -49,7 +49,8 @@ def capture_and_send():
                 # Lưu file Word trả về từ server
                 if docx_b64:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    docx_name = data.get("docx_filename") or f"Ket_qua_{job_id if job_id is not None else timestamp}.docx"
+                    job_suffix = job_id or timestamp
+                    docx_name = data.get("docx_filename") or f"Ket_qua_{job_suffix}.docx"
                     docx_path = Path(docx_name)
                     docx_path.write_bytes(base64.b64decode(docx_b64))
                     print(f"Da luu file Word: {docx_path.resolve()}")

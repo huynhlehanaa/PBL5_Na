@@ -28,7 +28,7 @@ for folder in [UPLOAD_FOLDER, PREPROCESS_FOLDER, LAYOUT_FOLDER, OUTPUT_FOLDER]:
     folder.mkdir(parents=True, exist_ok=True)
 
 
-def _count_chars(ocr_results):
+def _count_chars(ocr_results: list[dict]) -> int:
     return sum(len(line) for res in ocr_results for line in res.get("content", []))
 
 
@@ -44,6 +44,11 @@ def _build_docx(ocr_results, output_dir: Path, job_id: str):
     doc_path = output_dir / doc_filename
     doc.save(str(doc_path))
     return doc_path
+
+
+def _cleanup_dirs(*dirs: Path):
+    for d in dirs:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @app.route('/process', methods=['POST'])
@@ -68,8 +73,7 @@ def process():
     # 2. Tiền xử lý -> Phân tích bố cục -> OCR
     preprocessed_files = run_preprocess(req_input, req_pre)
     if not preprocessed_files:
-        for d in (req_input, req_pre, req_layout, req_output):
-            shutil.rmtree(d, ignore_errors=True)
+        _cleanup_dirs(req_input, req_pre, req_layout, req_output)
         return jsonify({"error": "No valid images after preprocessing"}), 400
 
     layout_results = run_layout(req_pre, req_layout)
@@ -77,20 +81,18 @@ def process():
 
     total_chars = _count_chars(ocr_results)
     if total_chars > MAX_DOC_CHARS:
-        for d in (req_input, req_pre, req_layout, req_output):
-            shutil.rmtree(d, ignore_errors=True)
+        _cleanup_dirs(req_input, req_pre, req_layout, req_output)
         return jsonify({"error": "Document content exceeds character limit"}), 400
 
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
     doc_path = _build_docx(ocr_results, req_output, job_id)
     if doc_path.stat().st_size > MAX_DOC_BYTES:
-        for d in (req_input, req_pre, req_layout, req_output):
-            shutil.rmtree(d, ignore_errors=True)
+        # Kết quả bị loại bỏ nên dọn luôn thư mục output tạm
+        _cleanup_dirs(req_input, req_pre, req_layout, req_output)
         return jsonify({"error": "Document file size exceeds limit"}), 400
 
     # Dọn dữ liệu trung gian, giữ lại kết quả cuối cùng
-    for d in (req_input, req_pre, req_layout):
-        shutil.rmtree(d, ignore_errors=True)
+    _cleanup_dirs(req_input, req_pre, req_layout)
     doc_b64 = base64.b64encode(doc_path.read_bytes()).decode("utf-8")
 
     return jsonify({

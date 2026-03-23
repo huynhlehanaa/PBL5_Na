@@ -14,6 +14,7 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
 MAX_DOC_BYTES = 10 * 1024 * 1024  # 10MB giới hạn docx trả về
+MAX_DOC_CHARS = 1_000_000  # Giới hạn độ dài nội dung để tránh docx quá lớn
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 UPLOAD_FOLDER = BASE_DIR / "data" / "input"
@@ -29,11 +30,11 @@ def _build_docx(ocr_results, output_dir: Path, job_id: str):
     """Tạo file Word từ kết quả OCR và trả về đường dẫn."""
     doc = Document()
     for res in ocr_results:
-        doc.add_heading(f"Kết quả: {res['image']}", level=1)
+        doc.add_heading(f"Kết quả: {res.get('image', 'Unknown')}", level=1)
         for line in res.get("content", []):
             doc.add_paragraph(line)
 
-    doc_filename = f"Ket_qua_{job_id}.docx"
+    doc_filename = f"Kết_quả_{job_id}.docx"
     doc_path = output_dir / doc_filename
     doc.save(str(doc_path))
     return doc_path
@@ -65,6 +66,10 @@ def process():
 
     layout_results = run_layout(req_pre, req_layout)
     ocr_results = run_ocr(req_pre, layout_results, req_output)
+
+    total_chars = sum(len(line) for res in ocr_results for line in res.get("content", []))
+    if total_chars > MAX_DOC_CHARS:
+        return jsonify({"error": "Generated document is too large"}), 400
 
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
     doc_path = _build_docx(ocr_results, req_output, job_id)

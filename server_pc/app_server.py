@@ -14,7 +14,8 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
 MAX_DOC_BYTES = 10 * 1024 * 1024  # 10MB giới hạn docx trả về
-MAX_DOC_CHARS = 1_000_000  # Giới hạn độ dài nội dung để tránh docx quá lớn
+# ~1 triệu ký tự ~ 1MB text thuần, giúp giữ file docx dưới mức giới hạn dung lượng
+MAX_DOC_CHARS = 1_000_000
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 UPLOAD_FOLDER = BASE_DIR / "data" / "input"
@@ -26,25 +27,22 @@ for folder in [UPLOAD_FOLDER, PREPROCESS_FOLDER, LAYOUT_FOLDER, OUTPUT_FOLDER]:
     folder.mkdir(parents=True, exist_ok=True)
 
 
-def _build_docx(ocr_results, output_dir: Path, job_id: str):
-    """Tạo file Word từ kết quả OCR và trả về đường dẫn.
+def _count_chars(ocr_results):
+    return sum(len(line) for res in ocr_results for line in res.get("content", []))
 
-    Trả về (path, total_chars). Nếu total_chars vượt ngưỡng, trả về (None, total_chars).
-    """
+
+def _build_docx(ocr_results, output_dir: Path, job_id: str):
+    """Tạo file Word từ kết quả OCR và trả về đường dẫn."""
     doc = Document()
-    total_chars = 0
     for res in ocr_results:
         doc.add_heading(f"Kết quả: {res.get('image', 'Unknown')}", level=1)
         for line in res.get("content", []):
-            total_chars += len(line)
-            if total_chars > MAX_DOC_CHARS:
-                return None, total_chars
             doc.add_paragraph(line)
 
     doc_filename = f"result_{job_id}.docx"
     doc_path = output_dir / doc_filename
     doc.save(str(doc_path))
-    return doc_path, total_chars
+    return doc_path
 
 
 @app.route('/process', methods=['POST'])
@@ -74,12 +72,14 @@ def process():
     layout_results = run_layout(req_pre, req_layout)
     ocr_results = run_ocr(req_pre, layout_results, req_output)
 
+    total_chars = _count_chars(ocr_results)
+    if total_chars > MAX_DOC_CHARS:
+        return jsonify({"error": "Document content exceeds character limit"}), 400
+
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
-    doc_path, total_chars = _build_docx(ocr_results, req_output, job_id)
-    if doc_path is None:
-        return jsonify({"error": "Generated document is too large"}), 400
+    doc_path = _build_docx(ocr_results, req_output, job_id)
     if doc_path.stat().st_size > MAX_DOC_BYTES:
-        return jsonify({"error": "Generated document is too large"}), 400
+        return jsonify({"error": "Document file size exceeds limit"}), 400
     doc_b64 = base64.b64encode(doc_path.read_bytes()).decode("utf-8")
 
     return jsonify({

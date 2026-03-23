@@ -1,10 +1,10 @@
 import base64
+from datetime import datetime
 import cv2
 import requests
 from pathlib import Path
 
 SERVER_URL = "http://10.222.177.172:5000/process"
-DOCX_OUTPUT = Path("Ket_qua_PBL5.docx")
 
 
 def capture_and_send():
@@ -35,9 +35,10 @@ def capture_and_send():
                     print("Xu ly that bai:", result)
                     continue
 
-                data = result.get("data", {})
+                data = result.get("data", {}) or {}
                 ocr_results = data.get("ocr", [])
                 docx_b64 = data.get("docx_base64")
+                request_id = data.get("request_id")
 
                 # Hiển thị nhanh 3 dòng đầu tiên của OCR để kiểm tra
                 if ocr_results:
@@ -47,8 +48,11 @@ def capture_and_send():
 
                 # Lưu file Word trả về từ server
                 if docx_b64:
-                    DOCX_OUTPUT.write_bytes(base64.b64decode(docx_b64))
-                    print(f"Da luu file Word: {DOCX_OUTPUT.resolve()}")
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    docx_name = data.get("docx_filename") or f"Ket_qua_{request_id or timestamp}.docx"
+                    docx_path = Path(docx_name)
+                    docx_path.write_bytes(base64.b64decode(docx_b64))
+                    print(f"Da luu file Word: {docx_path.resolve()}")
 
             except Exception as e:
                 print("Khong the ket noi den Server:", e)

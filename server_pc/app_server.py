@@ -21,7 +21,7 @@ for folder in [UPLOAD_FOLDER, PREPROCESS_FOLDER, LAYOUT_FOLDER, OUTPUT_FOLDER]:
     folder.mkdir(parents=True, exist_ok=True)
 
 
-def _build_docx(ocr_results, output_dir: Path, request_id: str):
+def _build_docx(ocr_results, output_dir: Path, job_id: str):
     """Tạo file Word từ kết quả OCR và trả về đường dẫn."""
     doc = Document()
     for res in ocr_results:
@@ -29,7 +29,7 @@ def _build_docx(ocr_results, output_dir: Path, request_id: str):
         for line in res.get("content", []):
             doc.add_paragraph(line)
 
-    doc_filename = f"Ket_qua_{request_id}.docx"
+    doc_filename = f"Ket_qua_{job_id}.docx"
     doc_path = output_dir / doc_filename
     doc.save(str(doc_path))
     return doc_path
@@ -40,11 +40,11 @@ def process():
     if 'image' not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
 
-    request_id = uuid.uuid4().hex
-    req_input = UPLOAD_FOLDER / request_id
-    req_pre = PREPROCESS_FOLDER / request_id
-    req_layout = LAYOUT_FOLDER / request_id
-    req_output = OUTPUT_FOLDER / request_id
+    job_id = uuid.uuid4().hex
+    req_input = UPLOAD_FOLDER / job_id
+    req_pre = PREPROCESS_FOLDER / job_id
+    req_layout = LAYOUT_FOLDER / job_id
+    req_output = OUTPUT_FOLDER / job_id
 
     for folder in [req_input, req_pre, req_layout, req_output]:
         folder.mkdir(parents=True, exist_ok=True)
@@ -63,7 +63,7 @@ def process():
     ocr_results = run_ocr(req_pre, layout_results, req_output)
 
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
-    doc_path = _build_docx(ocr_results, req_output, request_id)
+    doc_path = _build_docx(ocr_results, req_output, job_id)
     doc_b64 = base64.b64encode(doc_path.read_bytes()).decode("utf-8")
 
     return jsonify({
@@ -73,7 +73,7 @@ def process():
             "ocr": ocr_results,
             "docx_filename": doc_path.name,
             "docx_base64": doc_b64,
-            "request_id": request_id,
+            "job_id": job_id,
         }
     })
 

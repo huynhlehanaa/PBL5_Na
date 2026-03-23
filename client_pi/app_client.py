@@ -35,10 +35,10 @@ def capture_and_send():
                     print("Xu ly that bai:", result)
                     continue
 
-                data = result.get("data", {}) or {}
+                data = result.get("data", {})
                 ocr_results = data.get("ocr", [])
                 docx_b64 = data.get("docx_base64")
-                request_id = data.get("request_id")
+                job_id = data.get("job_id")
 
                 # Hiển thị nhanh 3 dòng đầu tiên của OCR để kiểm tra
                 if ocr_results:
@@ -49,7 +49,7 @@ def capture_and_send():
                 # Lưu file Word trả về từ server
                 if docx_b64:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    docx_name = data.get("docx_filename") or f"Ket_qua_{request_id or timestamp}.docx"
+                    docx_name = data.get("docx_filename") or f"Ket_qua_{job_id if job_id is not None else timestamp}.docx"
                     docx_path = Path(docx_name)
                     docx_path.write_bytes(base64.b64decode(docx_b64))
                     print(f"Da luu file Word: {docx_path.resolve()}")

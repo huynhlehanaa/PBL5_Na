@@ -3,7 +3,7 @@ import os
 import cv2
 import numpy as np
 from pathlib import Path
-from pipeline.layout import run_layout 
+from pipeline.layout import run_layout
 
 app = Flask(__name__)
 

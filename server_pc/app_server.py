@@ -49,7 +49,7 @@ def process():
     for folder in [req_input, req_pre, req_layout, req_output]:
         folder.mkdir(parents=True, exist_ok=True)
 
-    # 1. Nhận ảnh từ Pi gửi lên (ghi đè để tiết kiệm dung lượng)
+    # 1. Nhận ảnh từ Pi gửi lên (lưu theo job_id để tránh ghi đè giữa các yêu cầu)
     file = request.files['image']
     img_path = req_input / "capture.jpg"
     file.save(str(img_path))

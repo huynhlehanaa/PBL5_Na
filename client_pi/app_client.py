@@ -48,6 +48,8 @@ def capture_and_send():
 
                 # Lưu file Word trả về từ server
                 if docx_b64:
+                    if not job_id:
+                        print("Canh bao: server khong tra ve job_id, su dung timestamp du phong.")
                     job_suffix = job_id or datetime.now().strftime("%Y%m%d_%H%M%S")
                     docx_name = data.get("docx_filename") or f"Ket_qua_{job_suffix}.docx"
                     docx_path = Path(docx_name)

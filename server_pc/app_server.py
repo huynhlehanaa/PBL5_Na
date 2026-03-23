@@ -12,6 +12,10 @@ app = Flask(__name__)
 
 # Định nghĩa đường dẫn tuyệt đối để không phụ thuộc vào thư mục chạy lệnh
 BASE_DIR = Path(__file__).resolve().parent
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
+MAX_DOC_BYTES = 10 * 1024 * 1024  # 10MB giới hạn docx trả về
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+
 UPLOAD_FOLDER = BASE_DIR / "data" / "input"
 PREPROCESS_FOLDER = BASE_DIR / "data" / "preprocessed"
 LAYOUT_FOLDER = BASE_DIR / "data" / "layout"
@@ -64,6 +68,8 @@ def process():
 
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
     doc_path = _build_docx(ocr_results, req_output, job_id)
+    if doc_path.stat().st_size > MAX_DOC_BYTES:
+        return jsonify({"error": "Generated document is too large"}), 400
     doc_b64 = base64.b64encode(doc_path.read_bytes()).decode("utf-8")
 
     return jsonify({

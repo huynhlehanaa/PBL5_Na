@@ -48,7 +48,7 @@ def capture_and_send():
                 # Lưu file Word trả về từ server
                 if docx_b64:
                     if not job_id:
-                        print("Cảnh báo: server không trả về job_id, bỏ qua lưu file Word.")
+                        print("Canh bao: server khong tra ve job_id, bo qua luu file Word.")
                         continue
 
                     docx_name = data.get("docx_filename") or f"result_{job_id}.docx"

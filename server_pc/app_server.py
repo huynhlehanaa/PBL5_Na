@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import base64
 import uuid
+import shutil
 from pathlib import Path
 
 from pipeline.layout import run_layout
@@ -14,7 +15,7 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
 MAX_DOC_BYTES = 10 * 1024 * 1024  # 10MB giới hạn docx trả về
-# ~1 triệu ký tự ~ 1MB text thuần, giúp giữ file docx dưới mức giới hạn dung lượng
+# Heuristic: tránh xử lý văn bản OCR quá dài trước khi ghi docx (vẫn kiểm tra kích thước file thật sau đó)
 MAX_DOC_CHARS = 1_000_000
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
@@ -67,6 +68,8 @@ def process():
     # 2. Tiền xử lý -> Phân tích bố cục -> OCR
     preprocessed_files = run_preprocess(req_input, req_pre)
     if not preprocessed_files:
+        for d in (req_input, req_pre, req_layout, req_output):
+            shutil.rmtree(d, ignore_errors=True)
         return jsonify({"error": "No valid images after preprocessing"}), 400
 
     layout_results = run_layout(req_pre, req_layout)
@@ -74,12 +77,20 @@ def process():
 
     total_chars = _count_chars(ocr_results)
     if total_chars > MAX_DOC_CHARS:
+        for d in (req_input, req_pre, req_layout, req_output):
+            shutil.rmtree(d, ignore_errors=True)
         return jsonify({"error": "Document content exceeds character limit"}), 400
 
     # 3. Xuất file Word và mã hóa base64 để Pi có thể tải về ngay
     doc_path = _build_docx(ocr_results, req_output, job_id)
     if doc_path.stat().st_size > MAX_DOC_BYTES:
+        for d in (req_input, req_pre, req_layout, req_output):
+            shutil.rmtree(d, ignore_errors=True)
         return jsonify({"error": "Document file size exceeds limit"}), 400
+
+    # Dọn dữ liệu trung gian, giữ lại kết quả cuối cùng
+    for d in (req_input, req_pre, req_layout):
+        shutil.rmtree(d, ignore_errors=True)
     doc_b64 = base64.b64encode(doc_path.read_bytes()).decode("utf-8")
 
     return jsonify({

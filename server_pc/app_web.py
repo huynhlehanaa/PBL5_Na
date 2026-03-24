@@ -102,7 +102,13 @@ def process():
             
             # 4. VIETOCR
             t0 = time.perf_counter()
-            ocr_res = run_ocr_mem(img_ocr, boxes_list, predictor=ocr_model)
+            # Đã sửa: Bọc kết quả vào list để tương thích với export_word.py
+            ocr_res_raw = run_ocr_mem(img_ocr, boxes_list, predictor=ocr_model)
+            ocr_res = {
+                "image": file.filename, # Lấy tên gốc của ảnh upload
+                "content": ocr_res_raw["content"],
+                "content_with_labels": ocr_res_raw["content_with_labels"]
+            }
             timings["ocr_sec"] = round(time.perf_counter() - t0, 4)
         # <-- HẾT KHU VỰC ĐỘC QUYỀN (Khóa tự động mở tại đây) -->
 
@@ -218,6 +224,29 @@ def find_free_port(start_port=5000):
             continue
     return start_port
 
+# Biến toàn cục để giữ tạm ảnh gốc từ Pi
+pi_raw_image_buffer = None
+
+@app.route('/api/pi_upload', methods=['POST'])
+def pi_upload():
+    """Pi gọi API này để gửi ảnh gốc lên cực nhanh"""
+    global pi_raw_image_buffer
+    if 'image' in request.files:
+        # Lưu ảnh gốc vào RAM và trả lời Pi ngay lập tức
+        pi_raw_image_buffer = request.files['image'].read()
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error"}), 400
+
+@app.route('/api/pi_check', methods=['GET'])
+def pi_check():
+    """Web liên tục gọi API này để hóng xem có ảnh mới từ Pi không"""
+    global pi_raw_image_buffer
+    if pi_raw_image_buffer is not None:
+        # Mã hóa ảnh gốc thành Base64 để gửi về Web
+        img_b64 = base64.b64encode(pi_raw_image_buffer).decode()
+        pi_raw_image_buffer = None # Xóa bộ đệm sau khi Web đã lấy
+        return jsonify({"has_new": True, "image_b64": img_b64})
+    return jsonify({"has_new": False})
 
 if __name__ == '__main__':
     port = find_free_port(5000)

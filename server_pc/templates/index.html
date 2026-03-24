@@ -873,7 +873,7 @@
             }
 
             .btn-row {
-                flex-direction: column;
+                flex-direction: row;
             }
 
             .stats-row {
@@ -1273,6 +1273,7 @@
 
     // ── CORE PROCESS ──
     async function runProcess(formData, source) {
+        let isDone = false;
         const progSec = source === 'camera'
             ? document.getElementById('progress-section-cam')
             : document.getElementById('progress-section');
@@ -1315,18 +1316,24 @@
             let delay = 600;
             fakeProgress.forEach(([pct, label, wait]) => {
                 delay += wait;
-                setTimeout(() => setProgress(pct, label), delay);
+                setTimeout(() => {
+                    if (!isDone) setProgress(pct, label); 
+                }, delay);
             });
 
+            // Gọi API thật
             const response = await fetch('/process', { method: 'POST', body: formData });
-            setProgress(95, 'Nhận kết quả...');
 
             if (!response.ok) {
+                isDone = true; // Dừng chạy thanh tiến trình ảo
                 const err = await response.json();
                 throw new Error(err.error || 'Server error');
             }
 
             const result = await response.json();
+            isDone = true; // API trả về thành công mới chốt cờ isDone
+            setProgress(95, 'Nhận kết quả...');
+
             if (result.status !== 'success') throw new Error('Xử lý thất bại');
 
             setProgress(100, 'Hoàn thành!');
@@ -1432,6 +1439,41 @@
         t.className = 'show ' + type;
         setTimeout(() => t.className = '', 3000);
     }
+
+    // Hóng ảnh từ Pi mỗi 1.5 giây
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/pi_check');
+            const result = await res.json();
+            
+            if (result.has_new) {
+                showToast('Đã nhận ảnh từ Camera Pi! Bắt đầu xử lý...', 'success');
+                
+                // 1. Tự động chuyển Web sang Tab "Upload ảnh"
+                document.querySelector('[data-tab="upload"]').click();
+                
+                // 2. Đổi chuỗi Base64 nhận được thành một File ảnh thật
+                const byteString = atob(result.image_b64);
+                const ab = new ArrayBuffer(byteString.length);
+                const ia = new Uint8Array(ab);
+                for (let i = 0; i < byteString.length; i++) {
+                    ia[i] = byteString.charCodeAt(i);
+                }
+                const blob = new Blob([ab], { type: 'image/jpeg' });
+                const file = new File([blob], "pi_capture.jpg", { type: "image/jpeg" });
+                
+                // 3. Đổ file ảnh vào giao diện Upload (hiện ảnh gốc ra màn hình)
+                setUploadFile(file);
+                
+                // 4. TỰ ĐỘNG BẤM NÚT "XỬ LÝ" ĐỂ CHẠY AI & PROGRESS BAR!
+                setTimeout(() => {
+                    document.getElementById('btn-process-upload').click();
+                }, 500); 
+            }
+        } catch (err) {
+            // Im lặng khi lỗi mạng
+        }
+    }, 1500);
 </script>
 
 </body>

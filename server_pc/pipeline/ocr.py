@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 from PIL import Image
+from difflib import SequenceMatcher
 
 # 1. XỬ LÝ ĐƯỜNG DẪN ĐỂ TÌM VIETOCR-MASTER
 # Vì file này nằm trong pipeline/, nên .parent.parent sẽ trỏ ra D:\PBL5_Na
@@ -40,6 +41,80 @@ def load_ocr_model():
     # Predictor sẽ tự động tải weights (.pth) về nếu chưa có
     return Predictor(config)
 
+
+def _iou(box_a, box_b):
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter_area
+    return (inter_area / union) if union > 0 else 0.0
+
+
+def _non_max_suppress_boxes(boxes, iou_thresh=0.6):
+    if not boxes:
+        return []
+    # Ưu tiên box có score cao, sau đó giữ thứ tự đọc top->bottom.
+    candidates = sorted(
+        boxes,
+        key=lambda b: float(b.get("score", 0.0)),
+        reverse=True,
+    )
+    kept = []
+    for b in candidates:
+        bbox = [int(v) for v in b["bbox"]]
+        drop = False
+        for k in kept:
+            kbbox = [int(v) for v in k["bbox"]]
+            if _iou(bbox, kbbox) >= iou_thresh:
+                drop = True
+                break
+        if not drop:
+            kept.append(b)
+    return sorted(kept, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+
+
+def _enhance_crop_for_ocr(crop):
+    """
+    Tăng độ rõ chữ cho từng crop trước khi đưa vào VietOCR.
+    """
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bilateralFilter(gray, 5, 35, 35)
+    h, w = gray.shape[:2]
+    # Upscale giúp model đọc nét chữ nhỏ tốt hơn.
+    scale = 2.0 if max(h, w) < 1200 else 1.5
+    gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    return Image.fromarray(gray)
+
+
+def _normalize_text(text):
+    text = " ".join(str(text).strip().split())
+    return text.lower()
+
+
+def _is_duplicate_text(text, existing_texts, sim_threshold=0.93):
+    ntext = _normalize_text(text)
+    if not ntext:
+        return True
+    for ex in existing_texts:
+        nex = _normalize_text(ex)
+        if not nex:
+            continue
+        if ntext == nex:
+            return True
+        if SequenceMatcher(None, ntext, nex).ratio() >= sim_threshold:
+            return True
+    return False
+
 def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     ocr = predictor if predictor is not None else load_ocr_model()
@@ -58,22 +133,36 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
             print(f"[WARN] Không tìm thấy ảnh: {entry['image']}")
             continue
 
-        boxes = sorted(entry["boxes"], key=lambda b: b["bbox"][1])
+        candidate_boxes = []
+        for box in entry["boxes"]:
+            label = str(box.get("label", "")).strip().lower()
+            if label not in TEXT_LABELS:
+                continue
+            candidate_boxes.append(box)
+
+        boxes = _non_max_suppress_boxes(candidate_boxes, iou_thresh=0.6)
 
         text_lines = []           # dùng cho run_pipeline.py (chỉ cần text)
         content_with_labels = []  # dùng cho _build_docx (cần cả label)
 
         for box in boxes:
-            label = str(box.get("label", "")).strip().lower()
-            if label not in TEXT_LABELS:
-                continue
             x1, y1, x2, y2 = [int(v) for v in box["bbox"]]
+            # Nới nhẹ biên để không cắt mất dấu tiếng Việt.
+            pad = 3
+            x1 = max(0, x1 - pad)
+            y1 = max(0, y1 - pad)
+            x2 = min(img.shape[1], x2 + pad)
+            y2 = min(img.shape[0], y2 + pad)
             crop = img[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
-            pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            label = str(box.get("label", "")).strip().lower()
+            pil_img = _enhance_crop_for_ocr(crop)
             try:
                 pred_text = ocr.predict(pil_img)
+                pred_text = " ".join(str(pred_text).split()).strip()
+                if _is_duplicate_text(pred_text, text_lines):
+                    continue
                 text_lines.append(pred_text)
                 content_with_labels.append({"label": label, "text": pred_text})
             except Exception as e:

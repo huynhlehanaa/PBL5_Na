@@ -52,16 +52,16 @@ def preprocess_for_layout(img):
 
 def preprocess_for_ocr(img):
     """
-    Ảnh cho OCR: tăng tương phản + nhị phân để chữ nổi hơn.
+    Ảnh cho OCR: tăng tương phản nhẹ, hạn chế nhị phân hóa mạnh để tránh mất dấu.
     """
     img = _detect_and_warp_document(img)
     img = imutils.resize(img, width=1400)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bilateralFilter(gray, 5, 35, 35)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
-    bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
-    bw = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
-    return bw
+    # Trả về ảnh xám 3 kênh để OCR crop xử lý tiếp theo từng vùng.
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
 def run_preprocess(input_dir: Path, output_dir: Path, mode: str = "ocr"):
     output_dir.mkdir(parents=True, exist_ok=True)

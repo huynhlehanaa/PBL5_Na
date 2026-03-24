@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     from vietocr.tool.config import Cfg
 
 def load_ocr_model():
-    config = Cfg.load_config_from_name('vgg_transformer')
+    config = Cfg.load_config_from_name('vgg_seq2seq')
     config['device'] = 'cpu'
     config['predictor']['beamsearch'] = True
     return Predictor(config)
@@ -61,8 +61,17 @@ def _non_max_suppress_boxes(boxes, iou_thresh=0.4, iom_thresh=0.7):
     return sorted(kept, key=lambda b: (b["bbox"][1], b["bbox"][0]))
 
 
-def _merge_boxes_into_lines(boxes, y_center_thresh=24):
+def _merge_boxes_into_lines(boxes, y_center_thresh=None):
     if not boxes: return []
+
+    # --- DYNAMIC THRESHOLDING ---
+    # Tính chiều cao trung bình của tất cả các box
+    total_height = sum([b["bbox"][3] - b["bbox"][1] for b in boxes])
+    average_height = total_height / len(boxes)
+    
+    # Đặt ngưỡng bằng 50% chiều cao trung bình
+    y_center_thresh = average_height * 0.5
+
     sorted_boxes = sorted(boxes, key=lambda b: (b["bbox"][1], b["bbox"][0]))
     lines = []
     for b in sorted_boxes:
@@ -91,7 +100,6 @@ def _merge_boxes_into_lines(boxes, y_center_thresh=24):
             "label": label, "score": score,
         })
     return sorted(merged, key=lambda b: (b["bbox"][1], b["bbox"][0]))
-
 
 def _enhance_crop_for_ocr(crop):
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -160,50 +168,51 @@ def _ocr_bottom_fallback(img, ocr, existing_lines):
         return []
     return [text]
 
-
 def _split_block_into_lines(crop_img):
     h_img, w_img = crop_img.shape[:2]
-    # BẢO VỆ: Không cắt mảnh quá lùn
     if h_img < 50: return [{"image": crop_img, "x_local": 0, "y_local": 0}]
 
     gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
     _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # KERNEL: Mở rộng theo chiều dọc để bao trọn dấu tiếng Việt
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 5)) 
+    # SỬA KERNEL: Giảm từ 50 xuống 25 để không làm dính đáp án B và C vào nhau
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
     dilated = cv2.dilate(thresh, kernel, iterations=1)
     cnts, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     line_boxes = []
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
-        # LỌC RÁC: Chỉ cắt nếu khối đủ lớn
-        if h > 15 and w > 15: 
+        # SỬA BỘ LỌC: Hạ xuống > 3 để nhặt lại số "185" nhỏ bé
+        if h > 3 and w > 3:
             line_boxes.append((x, y, w, h))
             
     if not line_boxes: return [{"image": crop_img, "x_local": 0, "y_local": 0}]
     line_boxes = sorted(line_boxes, key=lambda b: b[1])
     
+    avg_h = sum([b[3] for b in line_boxes]) / len(line_boxes)
+    dynamic_thresh = avg_h * 0.45
+
     groups = []
     for box in line_boxes:
         cy = box[1] + box[3]/2.0
         placed = False
         for group in groups:
-            if abs(group['cy'] - cy) < 15: 
+            if abs(group['cy'] - cy) < dynamic_thresh: 
                 group['boxes'].append(box)
                 group['cy'] = (group['cy'] * (len(group['boxes'])-1) + cy) / len(group['boxes'])
                 placed = True
                 break
         if not placed: groups.append({'cy': cy, 'boxes': [box]})
-    
+        
     final_boxes = []
     for group in groups:
         final_boxes.extend(sorted(group['boxes'], key=lambda b: b[0]))
 
     lines = []
-    for (x, y, w, h) in line_boxes: # Thay final_boxes bằng line_boxes nếu bỏ qua gom nhóm
-        # SỬA PADDING: Cho phép lề trên dưới rộng ra để lấy hết dấu
+    # Duyệt qua final_boxes (đã sắp xếp) thay vì line_boxes (chưa sắp xếp)
+    for (x, y, w, h) in final_boxes: 
         pad_x, pad_y = 5, 8 
         y1, y2 = max(0, y - pad_y), min(h_img, y + h + pad_y)
         x1, x2 = max(0, x - pad_x), min(w_img, x + w + pad_x)
@@ -223,15 +232,22 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
 
         candidate_boxes = [box for box in entry["boxes"] if str(box.get("label", "")).strip().lower() in TEXT_LABELS]
         boxes = _non_max_suppress_boxes(candidate_boxes, iou_thresh=0.4, iom_thresh=0.7)
-        boxes = _merge_boxes_into_lines(boxes, y_center_thresh=24)
+        boxes = _merge_boxes_into_lines(boxes)
 
         text_lines, content_with_labels = [], []
 
         for box in boxes:
             x1, y1, x2, y2 = [int(v) for v in box["bbox"]]
-            pad = 3
-            x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
-            x2, y2 = min(img.shape[1], x2 + pad), min(img.shape[0], y2 + pad)
+            # --- PADDING (MỞ RỘNG VIỀN) ---
+            # Thêm 5 pixel "không gian thở" cho VietOCR
+            pad_x = 18
+            pad_y = 8
+            
+            # Dùng max/min để đảm bảo padding không bị tràn ra ngoài viền bức ảnh
+            x1 = max(0, x1 - pad_x)
+            y1 = max(0, y1 - pad_y)
+            x2 = min(img.shape[1], x2 + pad_x)
+            y2 = min(img.shape[0], y2 + pad_y)
             crop = img[y1:y2, x1:x2]
             if crop.size == 0: continue
             
@@ -283,3 +299,64 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
         all_results.append({"image": entry["image"], "content": text_lines, "content_with_labels": content_with_labels})
 
     return all_results
+
+def run_ocr_mem(img_array, boxes_list, predictor):
+    """Chạy OCR trực tiếp trên ảnh RAM và danh sách bounding box"""
+    TEXT_LABELS = {"text", "title", "plain text", "plaintext", "paragraph", "header", "footer", "caption", "list", "footnote", "formula"}
+    
+    candidate_boxes = [box for box in boxes_list if str(box.get("label", "")).strip().lower() in TEXT_LABELS]
+    boxes = _non_max_suppress_boxes(candidate_boxes, iou_thresh=0.4, iom_thresh=0.7)
+    boxes = _merge_boxes_into_lines(boxes)
+
+    text_lines, content_with_labels = [], []
+
+    for box in boxes:
+        x1, y1, x2, y2 = [int(v) for v in box["bbox"]]
+        # --- PADDING (MỞ RỘNG VIỀN) ---
+        # Thêm 5 pixel "không gian thở" cho VietOCR
+        pad_x = 18
+        pad_y = 8
+        
+        # Dùng max/min để đảm bảo padding không bị tràn ra ngoài viền bức ảnh
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(img_array.shape[1], x2 + pad_x)
+        y2 = min(img_array.shape[0], y2 + pad_y)
+        crop = img_array[y1:y2, x1:x2]
+        if crop.size == 0: continue
+        
+        label = str(box.get("label", "")).strip().lower()
+        line_data_list = _split_block_into_lines(crop)
+        
+        for l_data in line_data_list:
+            l_crop = l_data["image"]
+            h_c, w_c = l_crop.shape[:2]
+            
+            if w_c < 10 or h_c < 10: continue
+            
+            try:
+                pred_text = _predict_best_text(predictor, l_crop)
+                if not pred_text or _is_duplicate_text(pred_text, text_lines): continue
+                    
+                if len(pred_text) > 3 and (w_c / len(pred_text)) < 5.0:
+                    continue
+                
+                text_lines.append(pred_text)
+                content_with_labels.append({
+                    "label": label, "text": pred_text,
+                    "x": x1 + l_data["x_local"], "y": y1 + l_data["y_local"],
+                    "w": w_c, "h": h_c 
+                })
+            except Exception:
+                pass
+
+    if not text_lines:
+        try:
+            pil_img = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
+            pred_text = predictor.predict(pil_img).strip()
+            if pred_text:
+                text_lines.append(pred_text)
+                content_with_labels.append({"label": "plain text", "text": pred_text})
+        except Exception: pass
+
+    return {"content": text_lines, "content_with_labels": content_with_labels}

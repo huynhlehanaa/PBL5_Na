@@ -3,11 +3,16 @@ import base64, uuid, shutil, os, json, time
 from pathlib import Path
 import socket
 from collections import Counter
+import threading
 
-from pipeline.layout import run_layout, load_layout_model
-from pipeline.preprocess import run_preprocess
-from pipeline.ocr import run_ocr, load_ocr_model
-from pipeline.export_word import build_docx
+import cv2
+import numpy as np
+import io
+
+from pipeline.layout import run_layout_mem, load_layout_model
+from pipeline.preprocess import preprocess_for_layout, preprocess_for_ocr
+from pipeline.ocr import run_ocr_mem, load_ocr_model
+from pipeline.export_word import build_docx_mem
 from docx import Document
 
 app = Flask(__name__, template_folder="templates")
@@ -19,6 +24,9 @@ layout_model = load_layout_model()
 print("[INIT] Đang tải model VietOCR...")
 ocr_model = load_ocr_model()
 print("[INIT] Sẵn sàng!")
+
+# 2. KHỞI TẠO KHÓA TOÀN CỤC CHO AI
+ai_lock = threading.Lock()
 
 # ── Giới hạn ──
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024   # 10MB
@@ -54,109 +62,71 @@ def health():
 
 @app.route('/process', methods=['POST'])
 def process():
-    """Nhận ảnh → chạy pipeline → trả về OCR + docx base64."""
     try:
         if 'image' not in request.files:
             return jsonify({"status": "error", "error": "No image uploaded"}), 400
 
         started_at = time.perf_counter()
         timings = {}
-        job_id     = uuid.uuid4().hex
-        req_input  = UPLOAD_FOLDER     / job_id
-        req_pre    = PREPROCESS_FOLDER / job_id
-        req_pre_layout = req_pre / "layout"
-        req_pre_ocr = req_pre / "ocr"
-        req_layout = LAYOUT_FOLDER     / job_id
-        req_output = OUTPUT_FOLDER     / job_id
-
-        for folder in [req_input, req_pre, req_pre_layout, req_pre_ocr, req_layout, req_output]:
-            folder.mkdir(parents=True, exist_ok=True)
-
-        # 1. Lưu ảnh
+        job_id = uuid.uuid4().hex
         file = request.files['image']
-        img_path = req_input / "capture.jpg"
-        t0 = time.perf_counter()
-        file.save(str(img_path))
-        timings["save_image_sec"] = round(time.perf_counter() - t0, 4)
-        print(f"[{job_id}] 📥 Ảnh đã lưu: {img_path}")
 
-        # 2. Pipeline
-        print(f"[{job_id}] ⚙️ Chạy preprocessing cho layout...")
+        # 1. ĐỌC ẢNH VÀO RAM
         t0 = time.perf_counter()
-        preprocessed_layout_files = run_preprocess(req_input, req_pre_layout, mode="layout")
-        timings["preprocess_layout_sec"] = round(time.perf_counter() - t0, 4)
-        print(f"[{job_id}] ⚙️ Chạy preprocessing cho OCR...")
-        t0 = time.perf_counter()
-        preprocessed_ocr_files = run_preprocess(req_input, req_pre_ocr, mode="ocr")
-        timings["preprocess_ocr_sec"] = round(time.perf_counter() - t0, 4)
-        if not preprocessed_layout_files or not preprocessed_ocr_files:
-            _cleanup_dirs(req_input, req_pre, req_layout, req_output)
-            return jsonify({"status": "error", "error": "No valid images after preprocessing"}), 400
+        file_bytes = file.read()
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            return jsonify({"status": "error", "error": "Invalid image format"}), 400
+        timings["decode_image_sec"] = round(time.perf_counter() - t0, 4)
 
-        print(f"[{job_id}] 🔍 Chạy layout detection (YOLO)...")
+        # 2. TIỀN XỬ LÝ (Trên RAM - Phần này có thể chạy đa luồng bình thường)
         t0 = time.perf_counter()
-        layout_results = run_layout(req_pre_layout, req_layout, model=layout_model)
-        timings["layout_sec"] = round(time.perf_counter() - t0, 4)
-        
-        print(f"[{job_id}] 📝 Chạy OCR...")
-        t0 = time.perf_counter()
-        ocr_results    = run_ocr(req_pre_ocr, layout_results, req_output, predictor=ocr_model)
-        timings["ocr_sec"] = round(time.perf_counter() - t0, 4)
+        img_layout = preprocess_for_layout(img_bgr.copy())
+        img_ocr = preprocess_for_ocr(img_bgr.copy())
+        timings["preprocess_sec"] = round(time.perf_counter() - t0, 4)
 
-        # 3. Kiểm tra giới hạn
-        total_chars = _count_chars(ocr_results)
-        if total_chars > MAX_DOC_CHARS:
-            _cleanup_dirs(req_input, req_pre, req_layout, req_output)
-            return jsonify({"status": "error", "error": "Document content exceeds character limit"}), 400
+        # <-- 3. BỌC LOGIC AI VÀO TRONG LOCK -->
+        # Chỉ 1 luồng được phép đi qua khối code này tại một thời điểm
+        with ai_lock:
+            # 3. YOLOV10 LAYOUT
+            t0 = time.perf_counter()
+            # THÊM conf=0.1 VÀ debug=True VÀO ĐÂY
+            boxes_list, annotated_img = run_layout_mem(
+                img_layout,
+                model=layout_model,
+                conf=0.1,
+                debug=True
+            )
+            timings["layout_sec"] = round(time.perf_counter() - t0, 4)
+            
+            # 4. VIETOCR
+            t0 = time.perf_counter()
+            ocr_res = run_ocr_mem(img_ocr, boxes_list, predictor=ocr_model)
+            timings["ocr_sec"] = round(time.perf_counter() - t0, 4)
+        # <-- HẾT KHU VỰC ĐỘC QUYỀN (Khóa tự động mở tại đây) -->
 
-        # 4. Xuất Word
-        print(f"[{job_id}] 📄 Tạo file Word...")
+        # 5. XUẤT WORD RA RAM (Word cũng có thể chạy đa luồng an toàn)
         t0 = time.perf_counter()
-        doc_path = build_docx(ocr_results, req_output, job_id)
+        doc_stream = build_docx_mem([ocr_res])
         timings["export_docx_sec"] = round(time.perf_counter() - t0, 4)
-        if doc_path.stat().st_size > MAX_DOC_BYTES:
-            _cleanup_dirs(req_input, req_pre, req_layout, req_output)
-            return jsonify({"status": "error", "error": "Document file size exceeds limit"}), 400
 
-        # 5. Tìm ảnh layout để trả về cho Web UI xem trực tiếp
-        layout_img_url = None
-        layout_imgs = list(req_layout.glob("*_layout.jpg"))
-        if layout_imgs:
-            # Copy sang output để serve qua /output-file/
-            dest = req_output / "layout_preview.jpg"
-            shutil.copy(layout_imgs[0], dest)
-            layout_img_url = f"/output-file/{job_id}/layout_preview.jpg"
-
-        # 6. Dọn dẹp thư mục tạm
-        debug_report = {
-            "job_id": job_id,
-            "input_filename": file.filename,
-            "input_saved_as": img_path.name,
-            "layout_summary": _summarize_layout(layout_results),
-            "ocr_summary": _summarize_ocr(ocr_results),
-            "timings_sec": timings,
-            "total_elapsed_sec": round(time.perf_counter() - started_at, 4),
-            "docx_filename": doc_path.name,
-            "docx_size_bytes": doc_path.stat().st_size,
-        }
-        debug_filename = _write_debug_report(req_output, debug_report)
-        debug_report_url = f"/output-file/{job_id}/{debug_filename}"
-
-        _cleanup_dirs(req_input, req_pre, req_layout)
-        doc_b64 = base64.b64encode(doc_path.read_bytes()).decode()
-
-        print(f"[{job_id}] ✅ Xử lý thành công! {total_chars} ký tự")
+        # 6. ENCODE TRỰC TIẾP RA BASE64
+        doc_b64 = base64.b64encode(doc_stream.read()).decode()
         
+        _, buffer = cv2.imencode('.jpg', annotated_img)
+        layout_img_b64 = base64.b64encode(buffer).decode()
+        layout_img_uri = f"data:image/jpeg;base64,{layout_img_b64}"
+
         return jsonify({
             "status": "success",
             "data": {
-                "layout": layout_results,
-                "ocr": ocr_results,
-                "docx_filename": doc_path.name,
+                "layout": [{"image": "capture.jpg", "boxes": boxes_list}],
+                "ocr": [{"image": "capture.jpg", "content": ocr_res["content"], "content_with_labels": ocr_res["content_with_labels"]}],
+                "docx_filename": f"ket_qua_{job_id[:6]}.docx",
                 "docx_base64": doc_b64,
                 "job_id": job_id,
-                "layout_image_url": layout_img_url,
-                "debug_report_url": debug_report_url,
+                "layout_image_url": layout_img_uri,
             }
         })
     

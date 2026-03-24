@@ -2,6 +2,7 @@ import cv2
 import sys
 import os
 from pathlib import Path
+import numpy as np
 
 # Thêm đường dẫn tới thư mục imutils bạn đã tải (giả sử tên thư mục là imutils-master)
 base_path = Path(__file__).resolve().parent.parent
@@ -16,15 +17,32 @@ from imutils.perspective import four_point_transform
 VALID_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 def _detect_and_warp_document(img):
-    # 1) Tự động tìm khung và làm phẳng (Perspective Transform)
+    # 1. Tự động tìm khung và làm phẳng (Perspective Transform)
     ratio = img.shape[0] / 500.0
     orig = img.copy()
     image = imutils.resize(img, height=500)
 
+    # 2. Chuyển xám và ép dải tương phản cục bộ (CLAHE)
+    # Giúp làm nổi bật viền giấy kể cả khi giấy và nền có màu gần giống nhau
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(gray, 75, 200)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    gray = clahe.apply(gray)
+
+    # 3. Khử nhiễu hột (Noise) bằng Gaussian
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # 4. Dùng hình thái học (Morphological Closing) để nối các nét đứt
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed = cv2.morphologyEx(blur, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # 5. Auto-Canny: Tự động tính ngưỡng Canny dựa trên độ sáng chói (median) của ảnh
+    v = np.median(closed)
+    sigma = 0.33
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    edged = cv2.Canny(closed, lower, upper)
     
+    # 6. Tìm contours
     cnts = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
@@ -33,14 +51,19 @@ def _detect_and_warp_document(img):
     for c in cnts:
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
+        # Chỉ lấy contour nếu có đúng 4 góc và diện tích đủ lớn (tránh nhận diện nhầm tem mác)
+        if len(approx) == 4 and cv2.contourArea(c) > 10000:
             screenCnt = approx
             break
 
+    # Nếu tìm thấy khung, tiến hành bẻ thẳng (warp)
     if screenCnt is not None:
         return four_point_transform(orig, screenCnt.reshape(4, 2) * ratio)
-    else:
-        return orig
+    
+    # Nếu thuật toán vẫn thất bại (ảnh quá mờ/nhiễu), trả về ảnh gốc để xử lý tiếp
+    # thay vì crash hệ thống
+    print("[WARN] Auto-crop thất bại, giữ nguyên ảnh gốc.")
+    return orig
 
 def preprocess_for_layout(img):
     """

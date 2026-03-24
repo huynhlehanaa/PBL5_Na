@@ -33,6 +33,8 @@ def load_ocr_model():
     
     # Quan trọng cho Raspberry Pi: dùng CPU để tiết kiệm RAM
     config['device'] = 'cpu'
+    # Ưu tiên độ đúng hơn tốc độ.
+    config['predictor']['beamsearch'] = True
 
     # Trỏ đường dẫn tới file .pth bạn vừa huấn luyện xong
     # custom_weight_path = str(Path(__file__).resolve().parent.parent / "weights" / "ten_file_vietocr_cua_ban.pth")
@@ -81,6 +83,46 @@ def _non_max_suppress_boxes(boxes, iou_thresh=0.6):
     return sorted(kept, key=lambda b: (b["bbox"][1], b["bbox"][0]))
 
 
+def _merge_boxes_into_lines(boxes, y_center_thresh=22):
+    """
+    Gộp các box gần cùng một dòng để OCR theo dòng thay vì mảnh nhỏ.
+    Ưu tiên độ đúng hơn tốc độ.
+    """
+    if not boxes:
+        return []
+    sorted_boxes = sorted(boxes, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    lines = []
+    for b in sorted_boxes:
+        x1, y1, x2, y2 = [int(v) for v in b["bbox"]]
+        cy = (y1 + y2) / 2.0
+        placed = False
+        for ln in lines:
+            if abs(cy - ln["cy"]) <= y_center_thresh:
+                ln["members"].append(b)
+                ln["cy"] = (ln["cy"] * (len(ln["members"]) - 1) + cy) / len(ln["members"])
+                placed = True
+                break
+        if not placed:
+            lines.append({"cy": cy, "members": [b]})
+
+    merged = []
+    for ln in lines:
+        members = sorted(ln["members"], key=lambda m: m["bbox"][0])
+        xs1 = [int(m["bbox"][0]) for m in members]
+        ys1 = [int(m["bbox"][1]) for m in members]
+        xs2 = [int(m["bbox"][2]) for m in members]
+        ys2 = [int(m["bbox"][3]) for m in members]
+        labels = [str(m.get("label", "plain text")).strip().lower() for m in members]
+        label = "title" if "title" in labels else "plain text"
+        score = max(float(m.get("score", 0.0)) for m in members)
+        merged.append({
+            "bbox": [min(xs1), min(ys1), max(xs2), max(ys2)],
+            "label": label,
+            "score": score,
+        })
+    return sorted(merged, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+
+
 def _enhance_crop_for_ocr(crop):
     """
     Tăng độ rõ chữ cho từng crop trước khi đưa vào VietOCR.
@@ -126,7 +168,7 @@ def _normalize_text(text):
     return text.lower()
 
 
-def _is_duplicate_text(text, existing_texts, sim_threshold=0.93):
+def _is_duplicate_text(text, existing_texts, sim_threshold=0.97):
     ntext = _normalize_text(text)
     if not ntext:
         return True
@@ -181,6 +223,27 @@ def _predict_best_text(ocr, crop):
             best_text = pred_text
     return best_text
 
+
+def _ocr_bottom_fallback(img, ocr, existing_lines):
+    """
+    OCR bổ sung cho phần cuối trang (thường là đoạn thơ/caption dễ bị bỏ sót).
+    """
+    h = img.shape[0]
+    y1 = int(h * 0.68)
+    strip = img[y1:h, :]
+    if strip.size == 0:
+        return []
+    text = _predict_best_text(ocr, strip)
+    text = " ".join(str(text).split()).strip()
+    if not text:
+        return []
+    if _is_duplicate_text(text, existing_lines, sim_threshold=0.95):
+        return []
+    # Chỉ lấy nếu đủ dài để giảm nhiễu.
+    if len(text) < 25:
+        return []
+    return [text]
+
 def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     ocr = predictor if predictor is not None else load_ocr_model()
@@ -207,6 +270,7 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
             candidate_boxes.append(box)
 
         boxes = _non_max_suppress_boxes(candidate_boxes, iou_thresh=0.6)
+        boxes = _merge_boxes_into_lines(boxes, y_center_thresh=24)
 
         text_lines = []           # dùng cho run_pipeline.py (chỉ cần text)
         content_with_labels = []  # dùng cho _build_docx (cần cả label)
@@ -231,6 +295,16 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
                 content_with_labels.append({"label": label, "text": pred_text})
             except Exception as e:
                 print(f"[ERR] Lỗi nhận diện box: {e}")
+
+        # Nếu nội dung gần đáy trang còn thiếu, OCR bổ sung vùng đáy.
+        if boxes:
+            max_y2 = max(int(b["bbox"][3]) for b in boxes)
+            if max_y2 < int(img.shape[0] * 0.9):
+                extra_lines = _ocr_bottom_fallback(img, ocr, text_lines)
+                for t in extra_lines:
+                    text_lines.append(t)
+                    content_with_labels.append({"label": "plain text", "text": t})
+                    print(f"[OCR] Bổ sung dòng cuối trang cho: {entry['image']}")
 
         # Fallback: nếu layout không trả về vùng text nào, OCR toàn trang để tránh ra file rỗng.
         if not text_lines:

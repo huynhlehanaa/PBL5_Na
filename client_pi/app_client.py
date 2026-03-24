@@ -36,7 +36,7 @@ def send_image_thread(frame):
         if response.status_code == 200:
             result = response.json()
             if result.get("status") == "success":
-                print(f"[SUCCESS] Server đã xử lý xong!}")
+                print(f"[SUCCESS] Server đã xử lý xong!")
             else:
                 print(f"[ERROR] Server báo lỗi: {result}")
         else:

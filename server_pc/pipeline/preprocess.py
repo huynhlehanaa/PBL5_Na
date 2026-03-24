@@ -55,8 +55,18 @@ def _detect_and_warp_document(img):
         if len(approx) == 4 and cv2.contourArea(c) > 10000:
             screenCnt = approx
             break
-
-    # Nếu tìm thấy khung, tiến hành bẻ thẳng (warp)
+    
+    if screenCnt is None:
+        th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9)
+        fc = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        fc = imutils.grab_contours(fc)
+        if fc:
+            c = max(fc, key=cv2.contourArea)
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.03 * peri, True)
+            if len(approx) == 4 and cv2.contourArea(c) > 5000:
+                screenCnt = approx
+                
     if screenCnt is not None:
         return four_point_transform(orig, screenCnt.reshape(4, 2) * ratio)
     

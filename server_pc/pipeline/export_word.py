@@ -12,73 +12,61 @@ def build_docx_mem(ocr_results: list):
     font.size = Pt(13)
 
     for res in ocr_results:
-        content_items = res.get("content_with_labels", [])
-        if not content_items: continue
+        items = res.get("content_with_labels", [])
+        if not items: continue
 
-        # 1. Sắp xếp sơ bộ theo TÂM Y (Center Y) thay vì Đỉnh Y
-        content_items.sort(key=lambda x: x.get("y", 0) + (x.get("h", 20) / 2.0))
+        # Sort toàn cục theo y rồi x (thay cho “last_line” bias)
+        items.sort(key=lambda it: (it.get("y",0), it.get("x",0)))
 
+        # Gom dòng: quét lần lượt, nếu lệch y < 0.25*h thì cùng dòng
         lines = []
-        for item in content_items:
-            text = item.get("text", "").strip()
-            if not text: continue
-            
-            y_top = item.get("y", 0)
-            h = item.get("h", 20)
-            
-            # TÍNH TÂM Y THỰC SỰ ĐỂ GOM DÒNG
-            cy = y_top + (h / 2.0)
-            
-            # Ngưỡng động: 45% chiều cao chữ
-            dynamic_y_thresh = max(8, h * 0.45) 
+        for it in items:
+            cy = it.get("y",0) + it.get("h",20)/2.0
+            h  = it.get("h",20)
+            dy = max(6, h * 0.25)
+            if lines and abs(cy - lines[-1]["cy"]) < dy:
+                lines[-1]["items"].append(it)
+                # cập nhật cy trung bình
+                n = len(lines[-1]["items"])
+                lines[-1]["cy"] = (lines[-1]["cy"]*(n-1) + cy)/n
+            else:
+                lines.append({"cy": cy, "items": [it]})
 
-            placed = False
-            if lines:
-                last_line = lines[-1]
-                if abs(cy - last_line['cy']) < dynamic_y_thresh:
-                    last_line['items'].append(item)
-                    last_line['cy'] = (last_line['cy'] * (len(last_line['items']) - 1) + cy) / len(last_line['items'])
-                    placed = True
-                    
-            if not placed:
-                lines.append({'cy': cy, 'items': [item]})
+        # Sort dòng theo cy để không đảo a/b
+        lines.sort(key=lambda ln: ln["cy"])
 
-        # 2. Xử lý từng dòng
         for line in lines:
-            line['items'].sort(key=lambda item: item.get("x", 0))
-
-            full_line_text = ""
-            for i, it in enumerate(line['items']):
-                if i > 0:
-                    prev_it = line['items'][i-1]
-                    gap = it['x'] - (prev_it['x'] + prev_it.get('w', 20))
-                    
-                    if gap > 60:
-                        full_line_text += "\t" * max(1, int(gap/80)) + it['text']
-                    elif gap > 0:
-                        full_line_text += " " + it['text']
-                    else:
-                        full_line_text += " " + it['text']
+            line["items"].sort(key=lambda it: it.get("x",0))
+            ...
+            page_w = line["items"][0].get("page_w", 1400)
+            gap_thr = max(0.04*page_w, 40)  # tỉ lệ thay vì hằng số
+            text_acc = line["items"][0]["text"]
+            for i in range(1, len(line["items"])):
+                prev, cur = line["items"][i-1], line["items"][i]
+                gap = cur.get("x", 0) - (prev.get("x", 0) + prev.get("w", 20))
+                if gap > gap_thr:
+                    text_acc += "\t" + cur["text"]
                 else:
-                    full_line_text = it['text']
+                    text_acc += " " + cur["text"]
 
-            label = line['items'][0].get("label", "plain text").lower()
-            x_start = line['items'][0].get("x", 0)
+            label = line["items"][0].get("label", "plain text").lower()
+            x_start = line["items"][0].get("x", 0)
 
-            p = doc.add_paragraph(full_line_text)
-            
+            p = doc.add_paragraph(text_acc)
+            p.paragraph_format.space_after = Pt(4 if label == "plain text" else 8)
+
             if label in ["title", "header"]:
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                if p.runs: p.runs[0].bold = True 
+                if p.runs: p.runs[0].bold = True
             elif label == "table":
                 p.insert_paragraph_before("--- [Bảng biểu] ---")
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             else:
-                indent_inches = max(0, ((x_start - 60) / 1400.0) * 6.5)
-                if indent_inches > 0.3: 
+                indent_inches = max(0, (x_start / page_w) * 6.5)
+                if indent_inches > 0.3:
                     p.paragraph_format.left_indent = Inches(indent_inches)
 
-    file_stream = io.BytesIO()
-    doc.save(file_stream)
-    file_stream.seek(0)
-    return file_stream
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf

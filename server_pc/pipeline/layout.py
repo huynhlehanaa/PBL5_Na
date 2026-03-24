@@ -35,14 +35,14 @@ def load_layout_model():
     full_model_path = str(Path(__file__).resolve().parent.parent / "weights" / model_name)
     return YOLOv10(full_model_path)
 
-def run_layout(input_dir: Path, output_dir: Path, model=None):  # thêm model=None
+def run_layout(input_dir: Path, output_dir: Path, model=None, conf: float = 0.15):  # thêm model=None
     if model is None:
         model = load_layout_model()  # fallback khi gọi từ run_pipeline.py
     output_dir.mkdir(parents=True, exist_ok=True)
     files = sorted([p for p in input_dir.iterdir() if p.suffix.lower() in {".jpg", ".png", ".jpeg"}])
     layout_results = []
     for p in files:
-        results = model.predict(str(p), imgsz=1024, conf=0.25)
+        results = model.predict(str(p), imgsz=1024, conf=conf)
         res = results[0]
         items = []
         if res.boxes is not None:
@@ -50,7 +50,8 @@ def run_layout(input_dir: Path, output_dir: Path, model=None):  # thêm model=No
                 bbox = box.xyxy[0].cpu().numpy().tolist()
                 cls_id = int(box.cls[0])
                 label = res.names[cls_id]
-                items.append({"bbox": bbox, "label": label})
+                score = float(box.conf[0]) if hasattr(box, "conf") else 0.0
+                items.append({"bbox": bbox, "label": label, "score": score})
         annotated = res.plot()
         cv2.imwrite(str(output_dir / f"{p.stem}_layout.jpg"), annotated)
         layout_results.append({"image": p.name, "boxes": items})

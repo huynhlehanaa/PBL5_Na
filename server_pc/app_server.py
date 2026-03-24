@@ -4,6 +4,7 @@ from pathlib import Path
 from pipeline.layout import run_layout, load_layout_model
 from pipeline.preprocess import run_preprocess
 from pipeline.ocr import run_ocr, load_ocr_model
+from pipeline.export_word import build_docx
 from docx import Document
 
 app = Flask(__name__)
@@ -29,18 +30,6 @@ for folder in [UPLOAD_FOLDER, PREPROCESS_FOLDER, LAYOUT_FOLDER, OUTPUT_FOLDER]:
 def _count_chars(ocr_results):
     return sum(len(line) for res in ocr_results for line in res.get("content", []))
 
-def _build_docx(ocr_results, output_dir, job_id):
-    doc = Document()
-    for res in ocr_results:
-        for item in res.get("content_with_labels", []):
-            if item["label"] == "title":
-                doc.add_heading(item["text"], level=1)
-            else:
-                doc.add_paragraph(item["text"])
-    doc_path = output_dir / f"result_{job_id}.docx"
-    doc.save(str(doc_path))
-    return doc_path
-
 def _cleanup_dirs(*dirs):
     for d in dirs:
         shutil.rmtree(d, ignore_errors=True)
@@ -53,28 +42,31 @@ def process():
     job_id = uuid.uuid4().hex
     req_input  = UPLOAD_FOLDER     / job_id
     req_pre    = PREPROCESS_FOLDER / job_id
+    req_pre_layout = req_pre / "layout"
+    req_pre_ocr = req_pre / "ocr"
     req_layout = LAYOUT_FOLDER     / job_id
     req_output = OUTPUT_FOLDER     / job_id
-    for folder in [req_input, req_pre, req_layout, req_output]:
+    for folder in [req_input, req_pre, req_pre_layout, req_pre_ocr, req_layout, req_output]:
         folder.mkdir(parents=True, exist_ok=True)
 
     file = request.files['image']
     file.save(str(req_input / "capture.jpg"))
 
-    preprocessed_files = run_preprocess(req_input, req_pre)
-    if not preprocessed_files:
+    preprocessed_layout_files = run_preprocess(req_input, req_pre_layout, mode="layout")
+    preprocessed_ocr_files = run_preprocess(req_input, req_pre_ocr, mode="ocr")
+    if not preprocessed_layout_files or not preprocessed_ocr_files:
         _cleanup_dirs(req_input, req_pre, req_layout, req_output)
         return jsonify({"error": "No valid images after preprocessing"}), 400
 
     # ✅ Truyền model đã load sẵn vào
-    layout_results = run_layout(req_pre, req_layout, model=layout_model)
-    ocr_results    = run_ocr(req_pre, layout_results, req_output, predictor=ocr_model)
+    layout_results = run_layout(req_pre_layout, req_layout, model=layout_model)
+    ocr_results    = run_ocr(req_pre_ocr, layout_results, req_output, predictor=ocr_model)
 
     if _count_chars(ocr_results) > MAX_DOC_CHARS:
         _cleanup_dirs(req_input, req_pre, req_layout, req_output)
         return jsonify({"error": "Document content exceeds limit"}), 400
 
-    doc_path = _build_docx(ocr_results, req_output, job_id)
+    doc_path = build_docx(ocr_results, req_output, job_id)
     if doc_path.stat().st_size > MAX_DOC_BYTES:
         _cleanup_dirs(req_input, req_pre, req_layout, req_output)
         return jsonify({"error": "Document file size exceeds limit"}), 400

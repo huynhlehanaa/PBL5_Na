@@ -44,7 +44,11 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
     output_dir.mkdir(parents=True, exist_ok=True)
     ocr = predictor if predictor is not None else load_ocr_model()
 
-    TEXT_LABELS = {"text", "title", "plain text", "abandon"}
+    # Gộp nhiều biến thể nhãn text để đỡ phụ thuộc đúng 1 tên class.
+    TEXT_LABELS = {
+        "text", "title", "plain text", "plaintext", "paragraph",
+        "header", "footer", "caption", "list", "footnote", "formula"
+    }
     all_results = []
 
     for entry in layout_results:
@@ -60,7 +64,8 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
         content_with_labels = []  # dùng cho _build_docx (cần cả label)
 
         for box in boxes:
-            if box["label"] not in TEXT_LABELS:
+            label = str(box.get("label", "")).strip().lower()
+            if label not in TEXT_LABELS:
                 continue
             x1, y1, x2, y2 = [int(v) for v in box["bbox"]]
             crop = img[y1:y2, x1:x2]
@@ -70,9 +75,22 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
             try:
                 pred_text = ocr.predict(pil_img)
                 text_lines.append(pred_text)
-                content_with_labels.append({"label": box["label"], "text": pred_text})
+                content_with_labels.append({"label": label, "text": pred_text})
             except Exception as e:
                 print(f"[ERR] Lỗi nhận diện box: {e}")
+
+        # Fallback: nếu layout không trả về vùng text nào, OCR toàn trang để tránh ra file rỗng.
+        if not text_lines:
+            try:
+                full_page = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                pred_text = ocr.predict(full_page)
+                pred_text = pred_text.strip()
+                if pred_text:
+                    text_lines.append(pred_text)
+                    content_with_labels.append({"label": "plain text", "text": pred_text})
+                    print(f"[OCR] Fallback toàn trang cho: {entry['image']}")
+            except Exception as e:
+                print(f"[ERR] Lỗi OCR fallback toàn trang: {e}")
 
         txt_path = output_dir / f"{img_path.stem}.txt"
         txt_path.write_text("\n".join(text_lines), encoding="utf-8")

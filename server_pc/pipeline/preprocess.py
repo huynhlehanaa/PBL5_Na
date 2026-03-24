@@ -15,7 +15,7 @@ from imutils.perspective import four_point_transform
 
 VALID_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
-def preprocess_image(img):
+def _detect_and_warp_document(img):
     # 1) Tự động tìm khung và làm phẳng (Perspective Transform)
     ratio = img.shape[0] / 500.0
     orig = img.copy()
@@ -37,25 +37,33 @@ def preprocess_image(img):
             screenCnt = approx
             break
 
-    # Nếu tìm thấy khung hình chữ nhật, tiến hành làm phẳng
     if screenCnt is not None:
-        img = four_point_transform(orig, screenCnt.reshape(4, 2) * ratio)
+        return four_point_transform(orig, screenCnt.reshape(4, 2) * ratio)
     else:
-        img = orig
+        return orig
 
-    # 2) Làm sạch ảnh để OCR (Nhị phân hóa + Khử nhiễu)
+def preprocess_for_layout(img):
+    """
+    Ảnh cho layout: giữ gần ảnh gốc để model bố cục không bị méo domain.
+    """
+    img = _detect_and_warp_document(img)
+    img = imutils.resize(img, width=1400)
+    return img
+
+def preprocess_for_ocr(img):
+    """
+    Ảnh cho OCR: tăng tương phản + nhị phân để chữ nổi hơn.
+    """
+    img = _detect_and_warp_document(img)
     img = imutils.resize(img, width=1400)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Tăng tương phản và nhị phân thích nghi
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
     bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
     bw = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
-    
     return bw
 
-def run_preprocess(input_dir: Path, output_dir: Path):
+def run_preprocess(input_dir: Path, output_dir: Path, mode: str = "ocr"):
     output_dir.mkdir(parents=True, exist_ok=True)
     files = [p for p in input_dir.iterdir() if p.suffix.lower() in VALID_EXTS]
     
@@ -70,13 +78,16 @@ def run_preprocess(input_dir: Path, output_dir: Path):
         if img is None:
             print(f"   > [LỖI] Không thể đọc ảnh: {p.name}")
             continue
-            
-        processed = preprocess_image(img)
+
+        if mode == "layout":
+            processed = preprocess_for_layout(img)
+        else:
+            processed = preprocess_for_ocr(img)
+
         out_path = output_dir / p.name
         cv2.imwrite(str(out_path), processed)
         saved.append(out_path)
         
-        # Thêm dòng lệnh này để nó báo cáo khi xong mỗi ảnh
-        print(f"   > [PREPROCESS] Đã xử lý xong: {p.name}") 
+        print(f"   > [PREPROCESS:{mode.upper()}] Đã xử lý xong: {p.name}") 
         
     return saved

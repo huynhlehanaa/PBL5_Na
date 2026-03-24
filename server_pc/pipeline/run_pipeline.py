@@ -9,18 +9,21 @@ def main():
     base = Path(__file__).resolve().parent.parent
     
     input_dir = base / "data" / "input"
-    pre_dir = base / "data" / "preprocessed"
+    pre_layout_dir = base / "data" / "preprocessed" / "layout"
+    pre_ocr_dir = base / "data" / "preprocessed" / "ocr"
     layout_dir = base / "data" / "layout"
     output_dir = base / "data" / "output"
 
-    print("--- BƯỚC 1: TIỀN XỬ LÝ (IMUTILS) ---")
-    run_preprocess(input_dir, pre_dir)
+    print("--- BƯỚC 1A: TIỀN XỬ LÝ CHO LAYOUT (IMUTILS) ---")
+    run_preprocess(input_dir, pre_layout_dir, mode="layout")
+    print("--- BƯỚC 1B: TIỀN XỬ LÝ CHO OCR (IMUTILS) ---")
+    run_preprocess(input_dir, pre_ocr_dir, mode="ocr")
 
     print("\n--- BƯỚC 2: PHÂN TÍCH BỐ CỤC (DOCLAYOUT-YOLO) ---")
-    layout_results = run_layout(pre_dir, layout_dir)
+    layout_results = run_layout(pre_layout_dir, layout_dir)
 
     print("\n--- BƯỚC 3: NHẬN DIỆN CHỮ (VIETOCR) ---")
-    ocr_results = run_ocr(pre_dir, layout_results, output_dir)
+    ocr_results = run_ocr(pre_ocr_dir, layout_results, output_dir)
 
     print("\n--- BƯỚC 4: XUẤT FILE WORD ---")
     doc = Document()

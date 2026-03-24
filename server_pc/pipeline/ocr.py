@@ -26,55 +26,62 @@ except ModuleNotFoundError:
     from vietocr.tool.predictor import Predictor
     from vietocr.tool.config import Cfg
 
-def _load_ocr():
+def load_ocr_model():
     # Load cấu hình model vgg_transformer (phổ biến nhất của VietOCR)
     config = Cfg.load_config_from_name('vgg_transformer')
     
     # Quan trọng cho Raspberry Pi: dùng CPU để tiết kiệm RAM
-    config['device'] = 'cpu' 
+    config['device'] = 'cpu'
+
+    # Trỏ đường dẫn tới file .pth bạn vừa huấn luyện xong
+    # custom_weight_path = str(Path(__file__).resolve().parent.parent / "weights" / "ten_file_vietocr_cua_ban.pth")
+    # config['weights'] = custom_weight_path
     
     # Predictor sẽ tự động tải weights (.pth) về nếu chưa có
     return Predictor(config)
 
-def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path):
+def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=None):
     output_dir.mkdir(parents=True, exist_ok=True)
-    ocr = _load_ocr()
-    
+    ocr = predictor if predictor is not None else load_ocr_model()
+
+    TEXT_LABELS = {"text", "title", "plain text", "abandon"}
     all_results = []
+
     for entry in layout_results:
         img_path = pre_dir / entry["image"]
         img = cv2.imread(str(img_path))
-        if img is None: 
+        if img is None:
             print(f"[WARN] Không tìm thấy ảnh: {entry['image']}")
             continue
-        
-        # Sắp xếp các box từ trên xuống dưới (y1) để nội dung văn bản đúng thứ tự
+
         boxes = sorted(entry["boxes"], key=lambda b: b["bbox"][1])
-        
-        text_lines = []
+
+        text_lines = []           # dùng cho run_pipeline.py (chỉ cần text)
+        content_with_labels = []  # dùng cho _build_docx (cần cả label)
+
         for box in boxes:
-            # Cắt ảnh theo tọa độ từ YOLO
+            if box["label"] not in TEXT_LABELS:
+                continue
             x1, y1, x2, y2 = [int(v) for v in box["bbox"]]
             crop = img[y1:y2, x1:x2]
-            
-            if crop.size == 0: continue
-            
-            # VietOCR yêu cầu định dạng PIL Image và hệ màu RGB
-            rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb_crop)
-            
-            # Nhận diện chữ từ vùng đã cắt
+            if crop.size == 0:
+                continue
+            pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
             try:
                 pred_text = ocr.predict(pil_img)
                 text_lines.append(pred_text)
+                content_with_labels.append({"label": box["label"], "text": pred_text})
             except Exception as e:
                 print(f"[ERR] Lỗi nhận diện box: {e}")
-            
-        # Lưu kết quả text cho mỗi ảnh
+
         txt_path = output_dir / f"{img_path.stem}.txt"
         txt_path.write_text("\n".join(text_lines), encoding="utf-8")
-        
-        all_results.append({"image": entry["image"], "content": text_lines})
+
+        all_results.append({
+            "image": entry["image"],
+            "content": text_lines,                  # app_client.py preview dùng cái này
+            "content_with_labels": content_with_labels,  # _build_docx dùng cái này
+        })
         print(f"[OCR] Hoàn thành: {entry['image']} ({len(text_lines)} dòng)")
-    
+
     return all_results

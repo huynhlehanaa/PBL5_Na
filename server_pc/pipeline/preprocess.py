@@ -51,6 +51,7 @@ def preprocess_image(img):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
     bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
+    bw = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
     
     return bw
 

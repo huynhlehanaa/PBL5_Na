@@ -96,6 +96,31 @@ def _enhance_crop_for_ocr(crop):
     return Image.fromarray(gray)
 
 
+def _prepare_ocr_variants(crop):
+    """
+    Tạo nhiều biến thể crop để OCR rồi chọn kết quả tốt nhất theo confidence.
+    """
+    variants = []
+
+    # Variant 1: grayscale + denoise + CLAHE (mặc định tốt cho văn bản mờ)
+    variants.append(_enhance_crop_for_ocr(crop))
+
+    # Variant 2: adaptive threshold để làm nét ký tự mảnh
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    th = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11
+    )
+    variants.append(Image.fromarray(th))
+
+    # Variant 3: giữ màu gốc, upscale để hạn chế mất thông tin dấu
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    rgb = cv2.resize(rgb, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    variants.append(Image.fromarray(rgb))
+
+    return variants
+
+
 def _normalize_text(text):
     text = " ".join(str(text).strip().split())
     return text.lower()
@@ -114,6 +139,47 @@ def _is_duplicate_text(text, existing_texts, sim_threshold=0.93):
         if SequenceMatcher(None, ntext, nex).ratio() >= sim_threshold:
             return True
     return False
+
+
+def _text_quality_bonus(text):
+    txt = str(text).strip()
+    if not txt:
+        return -1.0
+    length = len(txt)
+    alpha = sum(ch.isalpha() for ch in txt)
+    digits = sum(ch.isdigit() for ch in txt)
+    noise = sum(ch in "|_~`" for ch in txt)
+    alpha_ratio = alpha / max(1, length)
+    digit_ratio = digits / max(1, length)
+    noise_penalty = noise / max(1, length)
+
+    # Thưởng nhẹ cho câu có chữ cái; phạt chuỗi nhiễu.
+    bonus = 0.25 * alpha_ratio
+    if digit_ratio > 0.7:
+        bonus -= 0.05
+    bonus -= 0.35 * noise_penalty
+    return bonus
+
+
+def _predict_best_text(ocr, crop):
+    best_text = ""
+    best_score = -1e9
+    for pil_img in _prepare_ocr_variants(crop):
+        try:
+            pred_text, prob = ocr.predict(pil_img, return_prob=True)
+        except TypeError:
+            # fallback nếu predictor không hỗ trợ return_prob
+            pred_text = ocr.predict(pil_img)
+            prob = None
+        pred_text = " ".join(str(pred_text).split()).strip()
+        if not pred_text:
+            continue
+        base_score = float(prob) if prob is not None else 0.0
+        score = base_score + _text_quality_bonus(pred_text)
+        if score > best_score:
+            best_score = score
+            best_text = pred_text
+    return best_text
 
 def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=None):
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -157,10 +223,8 @@ def run_ocr(pre_dir: Path, layout_results: list, output_dir: Path, predictor=Non
             if crop.size == 0:
                 continue
             label = str(box.get("label", "")).strip().lower()
-            pil_img = _enhance_crop_for_ocr(crop)
             try:
-                pred_text = ocr.predict(pil_img)
-                pred_text = " ".join(str(pred_text).split()).strip()
+                pred_text = _predict_best_text(ocr, crop)
                 if _is_duplicate_text(pred_text, text_lines):
                     continue
                 text_lines.append(pred_text)

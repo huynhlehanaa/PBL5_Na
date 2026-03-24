@@ -843,11 +843,19 @@
         /* ── FOOTER ── */
         footer {
             border-top: 1px solid var(--border);
-            padding: 20px 0;
+            padding: 20px; /* Đổi thành 20px để có khoảng cách 2 bên */
             text-align: center;
             color: var(--text-light);
             font-size: 12px;
             letter-spacing: 0.5px;
+            position: relative; /* Thêm dòng này làm gốc định vị */
+        }
+
+        #footer-time {
+            position: absolute;
+            right: 20px; /* Ép thời gian dính sát lề phải 20px */
+            top: 50%; /* Đẩy xuống giữa */
+            transform: translateY(-50%); /* Căn chuẩn xác ở giữa theo chiều dọc */
         }
 
         /* Responsive */
@@ -1083,7 +1091,8 @@
 
     <!-- FOOTER -->
     <footer>
-        <span>PBL5 — Hệ thống số hóa tài liệu <span id="footer-time"></span></span>
+        <span>PBL5 — Hệ thống số hóa tài liệu</span>
+        <span id="footer-time"></span>
     </footer>
 </div>
 

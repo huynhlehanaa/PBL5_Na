@@ -1440,40 +1440,49 @@
         setTimeout(() => t.className = '', 3000);
     }
 
-    // Hóng ảnh từ Pi mỗi 1.5 giây
+    // 1. Hàm Polling: Cứ 2 giây hỏi Server xem Pi có gửi ảnh chưa
     setInterval(async () => {
         try {
-            const res = await fetch('/api/pi_check');
-            const result = await res.json();
-            
-            if (result.has_new) {
-                showToast('Đã nhận ảnh từ Camera Pi! Bắt đầu xử lý...', 'success');
+            let response = await fetch('/api/pi_check');
+            let data = await response.json();
+
+            if (data.has_new) {
+                let imgSrc = "data:image/jpeg;base64," + data.image_b64;
                 
-                // 1. Tự động chuyển Web sang Tab "Upload ảnh"
-                document.querySelector('[data-tab="upload"]').click();
+                // Hiển thị ảnh lên khung Camera
+                document.getElementById('captured-image').src = imgSrc;
+                document.getElementById('captured-image-container').style.display = 'block';
                 
-                // 2. Đổi chuỗi Base64 nhận được thành một File ảnh thật
-                const byteString = atob(result.image_b64);
-                const ab = new ArrayBuffer(byteString.length);
-                const ia = new Uint8Array(ab);
-                for (let i = 0; i < byteString.length; i++) {
-                    ia[i] = byteString.charCodeAt(i);
-                }
-                const blob = new Blob([ab], { type: 'image/jpeg' });
-                const file = new File([blob], "pi_capture.jpg", { type: "image/jpeg" });
+                // Kích hoạt nút Xử lý
+                document.getElementById('btn-process-camera').disabled = false;
                 
-                // 3. Đổ file ảnh vào giao diện Upload (hiện ảnh gốc ra màn hình)
-                setUploadFile(file);
+                // Tự động nhảy sang tab Camera để người dùng thấy ảnh
+                document.querySelector('[data-tab="camera"]').click();
                 
-                // 4. TỰ ĐỘNG BẤM NÚT "XỬ LÝ" ĐỂ CHẠY AI & PROGRESS BAR!
-                setTimeout(() => {
-                    document.getElementById('btn-process-upload').click();
-                }, 500); 
+                // Lưu thành Blob để hàm processCameraImage() hiện tại của bạn lấy đi chạy AI
+                capturedImageBlob = base64ToBlob(data.image_b64, 'image/jpeg');
+                
+                showToast('📸 Đã nhận ảnh siêu nét từ Pi Cam V3!', 'success');
             }
-        } catch (err) {
-            // Im lặng khi lỗi mạng
+        } catch (error) {
+            // Bỏ qua lỗi nếu mạng chập chờn
         }
-    }, 1500);
+    }, 2000);
+
+    // 2. Hàm hỗ trợ chuyển Base64 thành Blob tương thích
+    function base64ToBlob(base64Data, contentType) {
+        const byteCharacters = atob(base64Data);
+        const byteArrays = [];
+        for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+            const slice = byteCharacters.slice(offset, offset + 512);
+            const byteNumbers = new Array(slice.length);
+            for (let i = 0; i < slice.length; i++) {
+                byteNumbers[i] = slice.charCodeAt(i);
+            }
+            byteArrays.push(new Uint8Array(byteNumbers));
+        }
+        return new Blob(byteArrays, { type: contentType });
+    }
 </script>
 
 </body>
